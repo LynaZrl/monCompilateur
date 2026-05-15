@@ -17,6 +17,7 @@ using namespace std;
 enum OPREL {EQU, DIFF, INF, SUP, INFE, SUPE, WTFR};
 enum OPADD {ADD, SUB, OR, WTFA};
 enum OPMUL {MUL, DIV, MOD, AND, WTFM};
+enum TYPE {UNSIGNED_INT, BOOLEAN};
 
 TOKEN current;
 FlexLexer* lexer = new yyFlexLexer;
@@ -33,34 +34,41 @@ void Error(string s){
 	exit(-1);
 }
 
-void Expression(void);
+TYPE Expression(void);
 void Statement(void);
 
-void Identifier(void){
+// Identifier retourne UNSIGNED_INT (pour l'instant)
+TYPE Identifier(void){
 	cout << "\tpush "<<lexer->YYText()<<"(%rip)"<<endl;
 	current=(TOKEN) lexer->yylex();
+	return UNSIGNED_INT;
 }
 
-void Number(void){
+// Number retourne UNSIGNED_INT
+TYPE Number(void){
 	cout <<"\tpush $"<<atoi(lexer->YYText())<<endl;
 	current=(TOKEN) lexer->yylex();
+	return UNSIGNED_INT;
 }
 
-void Factor(void){
+// Factor retourne le type de ce qu'il a analysé
+TYPE Factor(void){
+	TYPE type;
 	if(current==RPARENT){
 		current=(TOKEN) lexer->yylex();
-		Expression();
+		type=Expression();
 		if(current!=LPARENT)
 			Error("')' etait attendu");
 		else
 			current=(TOKEN) lexer->yylex();
 	}
 	else if(current==NUMBER)
-		Number();
+		type=Number();
 	else if(current==ID)
-		Identifier();
+		type=Identifier();
 	else
 		Error("'(' ou chiffre ou lettre attendue");
+	return type;
 }
 
 OPMUL MultiplicativeOperator(void){
@@ -78,12 +86,16 @@ OPMUL MultiplicativeOperator(void){
 	return opmul;
 }
 
-void Term(void){
+// Term retourne le type commun de tous les Factor
+TYPE Term(void){
 	OPMUL mulop;
-	Factor();
+	TYPE type1, type2;
+	type1=Factor();
 	while(current==MULOP){
 		mulop=MultiplicativeOperator();
-		Factor();
+		type2=Factor();
+		if(type1 != type2)
+			Error("Types incompatibles dans Term");
 		cout << "\tpop %rbx"<<endl;
 		cout << "\tpop %rax"<<endl;
 		switch(mulop){
@@ -109,6 +121,7 @@ void Term(void){
 				Error("operateur multiplicatif attendu");
 		}
 	}
+	return type1;
 }
 
 OPADD AdditiveOperator(void){
@@ -124,12 +137,16 @@ OPADD AdditiveOperator(void){
 	return opadd;
 }
 
-void SimpleExpression(void){
+// SimpleExpression retourne le type commun de tous les Term
+TYPE SimpleExpression(void){
 	OPADD adop;
-	Term();
+	TYPE type1, type2;
+	type1=Term();
 	while(current==ADDOP){
 		adop=AdditiveOperator();
-		Term();
+		type2=Term();
+		if(type1 != type2)
+			Error("Types incompatibles dans SimpleExpression");
 		cout << "\tpop %rbx"<<endl;
 		cout << "\tpop %rax"<<endl;
 		switch(adop){
@@ -147,6 +164,7 @@ void SimpleExpression(void){
 		}
 		cout << "\tpush %rax"<<endl;
 	}
+	return type1;
 }
 
 void DeclarationPart(void){
@@ -192,12 +210,16 @@ OPREL RelationalOperator(void){
 	return oprel;
 }
 
-void Expression(void){
+// Expression retourne BOOLEAN si opérateur relationnel, sinon le type de SimpleExpression
+TYPE Expression(void){
 	OPREL oprel;
-	SimpleExpression();
+	TYPE type1, type2;
+	type1=SimpleExpression();
 	if(current==RELOP){
 		oprel=RelationalOperator();
-		SimpleExpression();
+		type2=SimpleExpression();
+		if(type1 != type2)
+			Error("Types incompatibles dans Expression");
 		cout << "\tpop %rax"<<endl;
 		cout << "\tpop %rbx"<<endl;
 		cout << "\tcmpq %rax, %rbx"<<endl;
@@ -227,11 +249,15 @@ void Expression(void){
 		cout << "\tjmp Suite"<<TagNumber<<endl;
 		cout << "Vrai"<<TagNumber<<":\tpush $0xFFFFFFFFFFFFFFFF\t\t# True"<<endl;
 		cout << "Suite"<<TagNumber<<":"<<endl;
+		return BOOLEAN;  // operateur relationnel -> BOOLEAN
 	}
+	return type1;  // pas d'operateur relationnel -> type de SimpleExpression
 }
 
+// AssignementStatement verifie que variable et expression sont du meme type
 void AssignementStatement(void){
 	string variable;
+	TYPE type;
 	if(current!=ID)
 		Error("Identificateur attendu");
 	if(!IsDeclared(lexer->YYText())){
@@ -243,16 +269,23 @@ void AssignementStatement(void){
 	if(current!=ASSIGN)
 		Error("caracteres ':=' attendus");
 	current=(TOKEN) lexer->yylex();
-	Expression();
+	type=Expression();
+	// Pour l'instant toutes les variables sont UNSIGNED_INT
+	if(type != UNSIGNED_INT)
+		Error("Type incompatible dans l'affectation : UNSIGNED_INT attendu");
 	cout << "\tpop "<<variable<<"(%rip)"<<endl;
 	cout << "\tpush "<<variable<<"(%rip)"<<endl;
 	cout << "\tpop %rax"<<endl;
 }
 
+// IfStatement verifie que l'expression est BOOLEAN
 void IfStatement(void){
 	unsigned long tag = ++TagNumber;
+	TYPE type;
 	current = (TOKEN) lexer->yylex();
-	Expression();
+	type=Expression();
+	if(type != BOOLEAN)
+		Error("Expression booleenne attendue apres IF");
 	cout << "\tpop %rax" << endl;
 	cout << "\tcmpq $0, %rax" << endl;
 	cout << "\tje Faux" << tag << endl;
@@ -272,11 +305,15 @@ void IfStatement(void){
 	}
 }
 
+// WhileStatement verifie que l'expression est BOOLEAN
 void WhileStatement(void){
 	unsigned long tag = ++TagNumber;
+	TYPE type;
 	cout << "While" << tag << ":" << endl;
 	current = (TOKEN) lexer->yylex();
-	Expression();
+	type=Expression();
+	if(type != BOOLEAN)
+		Error("Expression booleenne attendue apres WHILE");
 	cout << "\tpop %rax" << endl;
 	cout << "\tcmpq $0, %rax" << endl;
 	cout << "\tje EndWhile" << tag << endl;
